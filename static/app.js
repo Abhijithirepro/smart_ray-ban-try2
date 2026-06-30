@@ -1,13 +1,30 @@
 /* MODULE SCAN — front-end controller (ES5, vanilla).
-   Handles upload (click + drag/drop), posts to /api/detect, renders the
-   verdict, confidence meter, per-corner scores, signature chips and overlay. */
+   Runs the ENTIRE detection pipeline in the browser (OpenCV.js + the detector
+   modules in static/detector/), with no server. Handles upload (click +
+   drag/drop) and live camera, renders the verdict, confidence meter, per-corner
+   P(camera) and an annotated overlay drawn on a canvas. */
 (function () {
   'use strict';
 
-  var ENDPOINT = '/api/detect';
-
   /* current input mode: 'camera' (default) or 'upload' */
   var mode = 'camera';
+
+  /* the learned classifier weights ({w,b,mu,sd,thresh}); fetched on load */
+  var model = null;
+  /* OpenCV.js runtime readiness */
+  var cvReady = false;
+
+  /** True once both OpenCV.js and the model JSON have loaded. */
+  function detectReady() { return cvReady && model !== null; }
+
+  /** Run cb once the OpenCV.js wasm runtime is initialised (race-safe). */
+  function whenCvReady(cb) {
+    if (window.cv && window.cv.Mat) { cb(); return; }
+    if (window.cv) { window.cv.onRuntimeInitialized = cb; }
+    var iv = window.setInterval(function () {
+      if (window.cv && window.cv.Mat) { window.clearInterval(iv); cb(); }
+    }, 50);
+  }
 
   /**
    * Grab an element by id (null-safe helper).
@@ -46,7 +63,7 @@
    * @returns {{l:number, r:number, has:boolean}}
    */
   function camProbs(payload) {
-    var pf = payload.per_feature || {};
+    var pf = payload.per_corner || {};
     var L = pf.L || {}, R = pf.R || {};
     var ok = function (v) { return v !== null && v !== undefined; };
     return { l: L.cam_prob, r: R.cam_prob, has: ok(L.cam_prob) && ok(R.cam_prob) };
@@ -121,8 +138,8 @@
     var threshold = payload.threshold || 0.5;
     var cp = camProbs(payload);
     /* the meter shows the BINDING corner: both must pass, so the weaker one
-       is what the verdict hinges on (falls back to overall_score sans model) */
-    var conf = cp.has ? Math.min(cp.l, cp.r) : (payload.overall_score || 0);
+       is what the verdict hinges on */
+    var conf = cp.has ? Math.min(cp.l, cp.r) : 0;
 
     el('overlay').src = payload.overlay || '';
     el('verdict-text').textContent = isMeta ? 'SMART GLASSES' : 'NORMAL GLASSES';
@@ -165,7 +182,6 @@
    * @param {Function} [onComplete] called after the request settles (ok or error)
    */
   function scan(file, onComplete) {
-    var xhr, form;
     var done = function (ok) { if (typeof onComplete === 'function') { onComplete(ok); } };
     if (!file) { done(false); return; }
     if (file.type && file.type.indexOf('image/') !== 0) {
@@ -173,34 +189,112 @@
       done(false);
       return;
     }
+    if (!detectReady()) {
+      setStatus('detector still loading — one moment …', 'busy');
+      done(false);
+      return;
+    }
     setStatus('scanning corners for a camera module', 'busy');
 
-    form = new FormData();
-    /* webcam frames are anonymous Blobs — give the part a .png filename so the
-       server's extension allow-list (.png) accepts it. */
-    form.append('image', file, file.name || 'capture.png');
-
-    xhr = new XMLHttpRequest();
-    xhr.open('POST', ENDPOINT, true);
-    xhr.onreadystatechange = function () {
-      var data;
-      if (xhr.readyState !== 4) { return; }
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    img.onload = function () {
+      var payload;
       try {
-        data = JSON.parse(xhr.responseText);
+        payload = runDetect(img);
       } catch (e) {
-        setStatus('unexpected server response', 'error');
+        URL.revokeObjectURL(url);
+        setStatus('detector error: ' + (e && e.message ? e.message : e), 'error');
         done(false);
         return;
       }
-      if (xhr.status === 200) {
-        renderResult(data);
-        done(true);
-      } else {
-        setStatus('error: ' + (data && data.error ? data.error : xhr.status), 'error');
-        done(false);
-      }
+      URL.revokeObjectURL(url);
+      renderResult(payload);
+      done(true);
     };
-    xhr.send(form);
+    img.onerror = function () {
+      URL.revokeObjectURL(url);
+      setStatus('could not read that image', 'error');
+      done(false);
+    };
+    img.src = url;
+  }
+
+  /**
+   * Run the full in-browser pipeline on a loaded image and return the payload
+   * (same shape the old /api/detect endpoint produced), with an overlay drawn.
+   * @param {HTMLImageElement} img
+   * @returns {Object}
+   */
+  function runDetect(img) {
+    var cv = window.cv;
+    var w = img.naturalWidth || img.width;
+    var h = img.naturalHeight || img.height;
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    var ctx = c.getContext('2d');
+    /* No white fill: the Python pipeline reads images with cv2.imread(IMREAD_COLOR),
+       which drops the alpha channel. A transparent canvas reads opaque pixels back
+       identically to cv2 and avoids white-compositing skew on RGBA inputs. Live
+       webcam frames are fully opaque, so this path is exact for camera mode. */
+    ctx.drawImage(img, 0, 0, w, h);
+    var id = ctx.getImageData(0, 0, w, h);
+    var src = cv.matFromImageData(id);
+    var payload;
+    try {
+      payload = window.DET.detectMat(src, cv, model, window.DET.config);
+    } finally {
+      src.delete();
+    }
+    payload.overlay = buildOverlay(img, payload);
+    return payload;
+  }
+
+  /**
+   * Draw the annotated overlay (frame bbox, lens boxes, corner ROIs + P(camera),
+   * verdict banner) on a canvas at canonical scale and return a data URI. This
+   * reproduces pipeline/viz.annotate in the browser.
+   * @param {HTMLImageElement} img
+   * @param {Object} payload
+   * @returns {string} PNG data URI
+   */
+  function buildOverlay(img, payload) {
+    var g = payload.geom || {};
+    var W = g.colorW || 1000, H = g.colorH || 1000;
+    var c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    var ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0, W, H);
+
+    function rect(x, y, w, h, color, lw) {
+      ctx.strokeStyle = color; ctx.lineWidth = lw || 2;
+      ctx.strokeRect(x, y, w, h);
+    }
+    var bb = g.bbox || payload.bbox;
+    if (bb) { rect(bb[0], bb[1], bb[2], bb[3], '#2d7dff', 2); }
+    [g.lensL, g.lensR].forEach(function (ln) {
+      if (!ln) { return; }
+      rect(ln.cx - ln.hw, ln.cy - ln.hh, ln.hw * 2, ln.hh * 2, '#27e08a', 1);
+    });
+    (g.rois || []).forEach(function (roi) {
+      rect(roi.x, roi.y, roi.w, roi.h, '#ffd23f', 2);
+      var p = (payload.per_corner[roi.side] || {}).cam_prob;
+      ctx.fillStyle = '#ffd23f';
+      ctx.font = '14px "Space Mono", monospace';
+      ctx.fillText(roi.side + (p == null ? '' : '  Pcam=' + fmt(p)),
+        roi.x, Math.max(12, roi.y - 4));
+    });
+    /* header banner */
+    var isMeta = payload.verdict === 'META';
+    ctx.fillStyle = 'rgba(0,0,0,0.78)';
+    ctx.fillRect(0, 0, W, 28);
+    ctx.fillStyle = isMeta ? '#ff4d4d' : '#27e08a';
+    ctx.font = '700 16px "Space Mono", monospace';
+    var pL = payload.prob_left, pR = payload.prob_right;
+    var banner = payload.verdict + (pL == null ? '' :
+      '  Pcam L=' + fmt(pL) + ' R=' + fmt(pR));
+    ctx.fillText(banner, 6, 20);
+    return c.toDataURL('image/png');
   }
 
   /* ======================================================================
@@ -445,6 +539,17 @@
     var drop = el('drop');
     var input = el('file');
     var again = el('again');
+
+    /* load the classifier weights and the OpenCV.js runtime up front */
+    setStatus('loading detector …', 'busy');
+    fetch('static/camera_clf.json')
+      .then(function (r) { return r.json(); })
+      .then(function (m) { model = m; if (cvReady) { setStatus('', ''); } })
+      .catch(function () { setStatus('could not load model weights', 'error'); });
+    whenCvReady(function () {
+      cvReady = true;
+      if (model !== null) { setStatus('', ''); }
+    });
 
     if (input) {
       input.addEventListener('change', function () {

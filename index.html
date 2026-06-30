@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MODULE SCAN // smart-glasses camera detector</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="static/style.css" />
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+
+  <!-- one-time spoken instructions, played when the live page opens -->
+  <audio id="intro-audio" preload="auto" src="static/intro-audio.mp3"></audio>
+
+  <header class="masthead">
+    <div class="masthead__mark">
+      <span class="dot" aria-hidden="true"></span>
+      MODULE&nbsp;SCAN
+    </div>
+    <div class="masthead__meta">
+      in-browser&nbsp;CV&nbsp;+&nbsp;learned&nbsp;corner&nbsp;verifier&nbsp;·&nbsp;threshold&nbsp;0.50
+    </div>
+  </header>
+
+  <main class="stage">
+    <section class="intro">
+      <h1 class="intro__title">Is there a<br /><em>camera</em> in the frame?</h1>
+      <p class="intro__lede">
+        Drop a clean, roughly front-on photo of a pair of glasses. The scanner
+        hunts the top-outer corners for a Ray-Ban&nbsp;Meta camera module —
+        a small dark glassy bezel with a central glint. Runs entirely in your
+        browser; nothing is uploaded.
+      </p>
+
+      <!-- HOW-IT-WORKS CLIP — sits here, away from the live camera scene -->
+      <figure id="intro-clip" class="intro__clip" hidden>
+        <video id="intro" class="intro__clip-video" muted playsinline loop
+               preload="auto" src="make_and_give.mp4"></video>
+        <figcaption class="intro__clip-cap">
+          HOW&nbsp;IT&nbsp;WORKS&nbsp;· the one thing you keep missing
+        </figcaption>
+      </figure>
+    </section>
+
+    <section class="console" aria-label="scanner">
+      <!-- MODE TOGGLE -->
+      <div class="mode-tabs" role="tablist" aria-label="input mode">
+        <button id="tab-camera" class="mode-tab is-active" type="button"
+                role="tab" aria-selected="true">LIVE&nbsp;CAMERA</button>
+        <button id="tab-upload" class="mode-tab" type="button"
+                role="tab" aria-selected="false">UPLOAD&nbsp;IMAGE</button>
+      </div>
+
+      <!-- CAMERA MODE (default) -->
+      <div id="camera-mode" class="camera">
+        <div class="camera__stage">
+          <p id="cam-instruction" class="camera__instruction">
+            Initialising camera&nbsp;… allow access when prompted.
+          </p>
+
+          <div id="live-wrap" class="camera__live" hidden>
+            <video id="live" class="camera__video" autoplay muted playsinline></video>
+            <div id="countdown" class="countdown" aria-hidden="true"></div>
+            <div id="cam-state" class="camera__state"></div>
+          </div>
+        </div>
+
+        <div id="cam-controls" class="camera__controls" hidden>
+          <p class="camera__prompt">Watch the how-it-works clip, then start the live scan.</p>
+          <div class="camera__buttons">
+            <button id="cam-start" class="again camera__start" type="button">
+              START&nbsp;TEST
+            </button>
+            <button id="cam-rewatch" class="again again--ghost camera__rewatch" type="button">
+              REPLAY&nbsp;CLIP
+            </button>
+          </div>
+        </div>
+        <canvas id="grab" hidden></canvas>
+      </div>
+
+      <!-- UPLOAD MODE -->
+      <div id="upload-mode" hidden>
+        <!-- DROP ZONE -->
+        <div id="drop" class="drop" tabindex="0" role="button"
+             aria-label="Upload an image to scan">
+          <input id="file" class="drop__input" type="file"
+                 accept="image/png,image/jpeg,image/webp,image/bmp" />
+          <div class="drop__inner">
+            <div class="drop__reticle" aria-hidden="true">
+              <span></span><span></span><span></span><span></span>
+            </div>
+            <p class="drop__hint">DROP IMAGE&nbsp;·&nbsp;OR CLICK</p>
+            <p class="drop__sub">png · jpg · webp</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- RESULT -->
+      <div id="result" class="result" hidden>
+        <div class="result__viz">
+          <div class="scanline" aria-hidden="true"></div>
+          <img id="overlay" class="result__img" alt="annotated detection overlay" />
+        </div>
+        <div class="result__panel">
+          <div id="verdict" class="verdict">
+            <span class="verdict__tag">VERDICT</span>
+            <span id="verdict-text" class="verdict__text">—</span>
+            <span id="verdict-reason" class="verdict__reason"></span>
+          </div>
+
+          <div class="meter">
+            <div class="meter__head">
+              <span>camera confidence · both corners must pass</span><span id="conf-val">0.00</span>
+            </div>
+            <div class="meter__track">
+              <div id="conf-fill" class="meter__fill"></div>
+              <div class="meter__mark" id="conf-mark" title="decision threshold"></div>
+            </div>
+          </div>
+
+          <div class="corners">
+            <div id="corner-l" class="corner">
+              <span class="corner__label">LEFT CORNER</span>
+              <span id="score-l" class="corner__score">—</span>
+              <span id="state-l" class="corner__state">camera?</span>
+            </div>
+            <div id="corner-r" class="corner">
+              <span class="corner__label">RIGHT CORNER</span>
+              <span id="score-r" class="corner__score">—</span>
+              <span id="state-r" class="corner__state">camera?</span>
+            </div>
+          </div>
+
+          <div class="why">
+            <span class="why__title">why this verdict</span>
+            <p id="why-text" class="why__text"></p>
+          </div>
+
+          <button id="again" class="again" type="button">SCAN ANOTHER</button>
+        </div>
+      </div>
+
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>in-browser CV · learned camera verifier per corner</span>
+    <span>smart glasses only when BOTH corners are cameras</span>
+  </footer>
+
+  <!-- OpenCV.js (self-contained, embedded wasm); sets window.cv asynchronously -->
+  <script async src="static/opencv.js"></script>
+  <!-- detector pipeline (hog must precede camera_clf) -->
+  <script src="static/detector/config.js"></script>
+  <script src="static/detector/hog.js"></script>
+  <script src="static/detector/camera_clf.js"></script>
+  <script src="static/detector/preprocess.js"></script>
+  <script src="static/detector/segment.js"></script>
+  <script src="static/detector/locate.js"></script>
+  <script src="static/detector/decide.js"></script>
+  <script src="static/detector/index.js"></script>
+  <!-- UI controller -->
+  <script src="static/app.js"></script>
+</body>
+</html>

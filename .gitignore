@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 .DS_Store
 .claude/
+# regenerable browser-port parity data (recreate via tools/dump_crops.py + dump_raw.py)
+tools/parity/

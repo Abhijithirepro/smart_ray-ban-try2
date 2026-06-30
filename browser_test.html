@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>PENDING</title></head>
+<body>
+<pre id="out">running…</pre>
+<script async src="static/opencv.js"></script>
+<script src="static/detector/config.js"></script>
+<script src="static/detector/hog.js"></script>
+<script src="static/detector/camera_clf.js"></script>
+<script src="static/detector/preprocess.js"></script>
+<script src="static/detector/segment.js"></script>
+<script src="static/detector/locate.js"></script>
+<script src="static/detector/decide.js"></script>
+<script src="static/detector/index.js"></script>
+<script>
+(function () {
+  'use strict';
+  var out = document.getElementById('out');
+  var model = null;
+  function whenCvReady(cb) {
+    if (window.cv && window.cv.Mat) { cb(); return; }
+    if (window.cv) { window.cv.onRuntimeInitialized = cb; }
+    var iv = setInterval(function () { if (window.cv && window.cv.Mat) { clearInterval(iv); cb(); } }, 50);
+  }
+  function loadImg(src) {
+    return new Promise(function (res, rej) {
+      var im = new Image();
+      im.onload = function () { res(im); };
+      im.onerror = function () { rej(new Error('load ' + src)); };
+      im.src = src;
+    });
+  }
+  function detect(img) {
+    var cv = window.cv;
+    var w = img.naturalWidth, h = img.naturalHeight;
+    var c = document.createElement('canvas'); c.width = w; c.height = h;
+    var ctx = c.getContext('2d');
+    /* no white fill — cv2.imread(IMREAD_COLOR) drops alpha; a transparent canvas
+       reads opaque pixels back identically and avoids white-compositing skew */
+    ctx.drawImage(img, 0, 0);
+    var src = cv.matFromImageData(ctx.getImageData(0, 0, w, h));
+    var p;
+    try { p = window.DET.detectMat(src, cv, model, window.DET.config); } finally { src.delete(); }
+    return p;
+  }
+  Promise.all([
+    fetch('static/camera_clf.json').then(function (r) { return r.json(); }),
+    fetch('tools/parity/reference.json').then(function (r) { return r.json(); }),
+    new Promise(function (res) { whenCvReady(res); })
+  ]).then(function (vals) {
+    model = vals[0];
+    var ref = vals[1];
+    var agree = 0, flips = [], i = 0;
+    function step() {
+      if (i >= ref.length) {
+        var msg = 'cv=' + (!!window.cv.Mat) + '\nBROWSER verdict agreement vs Python: ' + agree + '/' + ref.length + '\n' + flips.join('\n');
+        out.textContent = msg;
+        document.title = 'DONE ' + agree + '/' + ref.length;
+        return;
+      }
+      var e = ref[i];
+      var folder = e.label === 1 ? 'ray_ban_frame/' : 'normal_frame/';
+      loadImg(folder + e.name).then(function (img) {
+        var p = detect(img);
+        if (p.verdict === e.verdict) { agree++; }
+        else { flips.push('FLIP ' + e.name + ' py=' + e.verdict + ' js=' + p.verdict + ' [L=' + p.prob_left + ' R=' + p.prob_right + ']'); }
+        i++; step();
+      }).catch(function (err) {
+        flips.push('ERR ' + e.name + ' ' + err.message); i++; step();
+      });
+    }
+    step();
+  }).catch(function (err) {
+    out.textContent = 'SETUP ERROR: ' + err.message;
+    document.title = 'ERROR';
+  });
+})();
+</script>
+</body>
+</html>

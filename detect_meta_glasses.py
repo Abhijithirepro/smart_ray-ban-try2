@@ -26,10 +26,8 @@ def parse_args(argv=None):
     p.add_argument("--config", help="JSON file of config overrides")
     p.add_argument("--target-width", type=int, help="canonical resize width")
     p.add_argument("--threshold", type=float,
-                   help="override strong_thresh (META fire threshold)")
+                   help="override cam_clf_thresh (per-corner P(camera) to fire)")
     p.add_argument("--bbox", help="manual frame bbox 'x,y,w,h' (canonical px)")
-    p.add_argument("--require-both", action="store_true",
-                   help="require a module in BOTH corners (Stories-style)")
     p.add_argument("--debug", action="store_true",
                    help="write annotated overlay + features JSON")
     p.add_argument("--debug-dir", default="debug")
@@ -44,9 +42,7 @@ def build_config(args) -> Config:
     if args.target_width:
         cfg.target_width = args.target_width
     if args.threshold is not None:
-        cfg.strong_thresh = args.threshold
-    if args.require_both:
-        cfg.require_both = True
+        cfg.cam_clf_thresh = args.threshold
     return cfg
 
 
@@ -88,9 +84,9 @@ def main(argv=None):
     elif args.quiet:
         print(verdict.verdict)
     else:
-        print(f"{verdict.verdict}  overall={verdict.overall_score:.2f}  "
-              f"L={verdict.score_left:.2f} R={verdict.score_right:.2f}  "
-              f"({args.image})")
+        pL = "n/a" if verdict.prob_left is None else f"{verdict.prob_left:.2f}"
+        pR = "n/a" if verdict.prob_right is None else f"{verdict.prob_right:.2f}"
+        print(f"{verdict.verdict}  Pcam L={pL} R={pR}  ({args.image})")
     return 0
 
 
